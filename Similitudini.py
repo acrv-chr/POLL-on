@@ -43,8 +43,7 @@ def calcola_metriche_community(df):
     presenze.columns = ['Utente', 'Sondaggi_Votati']
     presenze = presenze.sort_values(by='Sondaggi_Votati', ascending=False)
     
-    # 2. COERENZA (Estraiamo un "Tema" generico dal nome del poll, ignorando l'ultimo segmento es. _R1)
-    # Modifica questa lambda se i tuoi nomi poll hanno una struttura diversa
+    # 2. COERENZA
     df['Tema'] = df['Round_Poll'].apply(lambda x: x.rsplit('_', 1)[0] if '_' in x else x)
     voti_per_tema = df.groupby(['Utente', 'Tema'])['Voto'].nunique().reset_index()
     voti_per_tema['È_Coerente'] = voti_per_tema['Voto'] == 1
@@ -75,8 +74,11 @@ with st.spinner("Elaborazione dei dati in corso..."):
     matrice_grezza, matrice_confidenza = calcola_matrici_base(df_voti)
     df_presenze, df_coerenza, df_conformismo = calcola_metriche_community(df_voti)
 
+# Determina il numero massimo di voti per lo slider
+max_voti = int(df_presenze['Sondaggi_Votati'].max()) if not df_presenze.empty else 10
+
 # --- SIDEBAR INTERATTIVA ---
-st.sidebar.header("⚙️ Impostazioni Algoritmo")
+st.sidebar.header("⚙️ Mappa Affinità")
 
 peso_confidenza = st.sidebar.slider(
     "Peso della Confidenza (Penalità per pochi voti):", 
@@ -87,6 +89,16 @@ peso_confidenza = st.sidebar.slider(
 soglia = st.sidebar.slider(
     "Nascondi affinità finale sotto il:", 
     min_value=0.0, max_value=1.0, value=0.0, step=0.05
+)
+
+st.sidebar.markdown("---")
+st.sidebar.header("🏆 Classifiche Community")
+
+# NUOVO SLIDER: Soglia minima di voti per entrare in classifica
+min_voti_classifica = st.sidebar.slider(
+    "Minimo sondaggi votati per entrare in classifica:", 
+    min_value=1, max_value=max_voti, value=3, step=1,
+    help="Esclude dalle metriche di Coerenza e Mainstream gli utenti che hanno partecipato troppo poco per essere valutati."
 )
 
 # --- NAVIGAZIONE A SCHEDE (TABS) ---
@@ -129,6 +141,13 @@ with tab1:
 with tab2:
     st.subheader("Le metriche comportamentali della community")
     
+    # Applichiamo il filtro del nuovo slider: troviamo chi ha raggiunto il limite minimo di voti
+    utenti_validi = df_presenze[df_presenze['Sondaggi_Votati'] >= min_voti_classifica]['Utente']
+    
+    # Filtriamo i DataFrame di Coerenza e Conformismo
+    df_coerenza_filtrato = df_coerenza[df_coerenza['Utente'].isin(utenti_validi)]
+    df_conformismo_filtrato = df_conformismo[df_conformismo['Utente'].isin(utenti_validi)]
+    
     # 3 Colonne per le classifiche testuali
     col1, col2, col3 = st.columns(3)
     
@@ -137,34 +156,38 @@ with tab2:
         st.dataframe(df_presenze, hide_index=True, use_container_width=True)
         
     with col2:
-        st.write("🛡️ **I più Coerenti** (% fedeltà al voto)")
-        st.dataframe(df_coerenza, hide_index=True, use_container_width=True)
+        st.write(f"🛡️ **I più Coerenti** (Min. {min_voti_classifica} voti)")
+        st.dataframe(df_coerenza_filtrato, hide_index=True, use_container_width=True)
         
     with col3:
-        st.write("🐑 **I più Mainstream** (% voto alla massa)")
-        df_conformismo_ordinato = df_conformismo.sort_values(by='Popolarita_Scelta_%', ascending=False)
+        st.write(f"🐑 **I più Mainstream** (Min. {min_voti_classifica} voti)")
+        df_conformismo_ordinato = df_conformismo_filtrato.sort_values(by='Popolarita_Scelta_%', ascending=False)
         st.dataframe(df_conformismo_ordinato, hide_index=True, use_container_width=True)
 
     st.markdown("---")
     
     # Grafico a dispersione: Partecipazione vs Conformismo
-    st.subheader("Analisi: Veterani vs Mainstream")
-    df_analisi = pd.merge(df_presenze, df_conformismo, on='Utente')
+    st.subheader(f"Analisi: Veterani vs Mainstream (Solo utenti con ≥ {min_voti_classifica} voti)")
+    df_analisi = pd.merge(df_presenze[df_presenze['Utente'].isin(utenti_validi)], df_conformismo_filtrato, on='Utente')
     
-    fig_scatter = px.scatter(
-        df_analisi, 
-        x="Sondaggi_Votati", 
-        y="Popolarita_Scelta_%",
-        text="Utente",
-        labels={
-            "Sondaggi_Votati": "Numero di Partecipazioni",
-            "Popolarita_Scelta_%": "Tendenza Mainstream (%)"
-        },
-        title="I veri Anticonformisti si trovano in basso (votano le nicchie)"
-    )
-    fig_scatter.update_traces(textposition='top center')
-    # Aggiungiamo linee mediane per dividere in quadranti
-    fig_scatter.add_vline(x=df_analisi['Sondaggi_Votati'].median(), line_dash="dash", line_color="gray", opacity=0.5)
-    fig_scatter.add_hline(y=df_analisi['Popolarita_Scelta_%'].median(), line_dash="dash", line_color="gray", opacity=0.5)
-    
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    # Controlliamo che ci siano dati prima di disegnare il grafico (evita errori se il filtro è troppo alto)
+    if not df_analisi.empty:
+        fig_scatter = px.scatter(
+            df_analisi, 
+            x="Sondaggi_Votati", 
+            y="Popolarita_Scelta_%",
+            text="Utente",
+            labels={
+                "Sondaggi_Votati": "Numero di Partecipazioni",
+                "Popolarita_Scelta_%": "Tendenza Mainstream (%)"
+            },
+            title="I veri Anticonformisti si trovano in basso (votano le nicchie)"
+        )
+        fig_scatter.update_traces(textposition='top center')
+        # Aggiungiamo linee mediane per dividere in quadranti
+        fig_scatter.add_vline(x=df_analisi['Sondaggi_Votati'].median(), line_dash="dash", line_color="gray", opacity=0.5)
+        fig_scatter.add_hline(y=df_analisi['Popolarita_Scelta_%'].median(), line_dash="dash", line_color="gray", opacity=0.5)
+        
+        st.plotly_chart(fig_scatter, use_container_width=True)
+    else:
+        st.info("Nessun utente soddisfa i criteri del filtro per mostrare il grafico.")
